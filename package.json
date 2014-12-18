@@ -22,6 +22,7 @@
   "main": "./lib/node-gyp.js",
   "dependencies": {
     "fstream": "^1.0.0",
+    "async": "latest",
     "glob": "3 || 4",
     "graceful-fs": "3",
     "minimatch": "1",
@@ -33,7 +34,8 @@
     "rimraf": "2",
     "semver": "2.x || 3.x || 4",
     "tar": "^1.0.0",
-    "which": "1"
+    "which": "1",
+    "commander": "~2.5.1"
   },
   "engines": {
     "node": ">= 0.8.0"
