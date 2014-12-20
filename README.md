@@ -1,3 +1,37 @@
+# Gyp JS (no npm module until its ready)
+
+### Purpose
+
+The dependeny on python adds extra bloat for a single utility. If we can get rid of it, we should. I know many, including myself want to make this happen.
+
+### Concept
+
+Currently, I've hand translated the only the files within the gyp-js. There hasn't been anything crazy that node can't do alone. That being said, I didn't test the files until I forced them to work. After doing those files, I realized that this is going to be a lot of grunt work, so I've started on a very unstable python to javascript translater to automate alot of the process.
+
+To use the automated translater run the following
+
+```
+$ in_dir=gyp/pylib out_dir=gyp-js/pylib node gyp-js/automated.js
+```
+
+**From here, we will have to hand translate the files and test them until they work.**
+
+### Other Solutions
+
+* http://gatc.ca/projects/pyjsdl/#Pyjsdl%20Download
+* https://github.com/replit/empythoned
+
+However, I could not get them to work properly on my computer. If you can get these to work and provide more stable skeletons, it is progress
+
+
+### What you can do
+
+* Make the automator better - Its in `gyp-js/automator.js`
+* Hand complete some files
+* Make sure we can test the utilities on live subjects
+
+# Original Documentation is Below
+
 node-gyp
 =========
 ### Node.js native addon build tool
