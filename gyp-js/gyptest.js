@@ -130,8 +130,8 @@ function find_all_gyptest_files(directory){
   var result = [];
   var stat = fs.statSync(directory);
   if(!stat.isDir()){
-    if(is_test_name(files[i])){
-      results.push(tpath);
+    if(is_test_name(directory)){
+      results.push(directory);
     }else{
       return false;
     }
