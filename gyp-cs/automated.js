@@ -2,16 +2,27 @@
 
 var fs = require("fs");
 var path = require("path");
-var curclass = [];
-var lastws = 0;
-var curws = 0;
-var multi = false;
-var req = [];
-var exp = [];
-var lastline = "";
+var lint = require("coffeelint");
+
+//Global Aspects
+var curfile = "";
 var hasusrbin = false;
-var curender = [];
+var req = [];
+var subreq = []
+var exp = [];
+
+
+//Block aspects
+var lastws = 0;
 var lastlineisextension = false;
+var currentblocktype = false;
+var multi = false;
+var curclass = [];
+
+//Line Aspects
+var curws = 0;
+var curline = -1;
+
 
 function addclass(name,inherits){
   curclass.unshift({
@@ -30,12 +41,18 @@ function addreq(name){
     req.push(name);
   }
 }
+function addsubreq(sub,from){
+  if(!(sub in subreq)){
+    subreq.push([sub,from]);
+  }
+}
+
 
 function addexport(name){
   if(exp.indexOf(name) == -1){
     exp.push(name);
   }else{
-    throw new Error("exporting the "+name+" twice");
+    throw_or_log("exporting the "+name+" twice");
   }
 }
 
@@ -45,7 +62,7 @@ function walkdir(indir,outdir){
   var stat = fs.statSync(indir);
   if(!stat.isDirectory()){
     if(/\.py$/.test(indir)){
-      transform(indir, outdir.substring(0,outdir.length-3)+".js");
+      transform(indir, outdir.substring(0,outdir.length-3)+".coffee");
       console.log(indir+" was transformed into "+outdir);
       result.push(indir);
     }else{
@@ -75,23 +92,25 @@ function walkdir(indir,outdir){
 }
 
 function transform(infile,outfile){
+  curfile = infile;
+
   var file = fs.readFileSync(infile);
   file = file.toString("utf8");
   file = file.split("\n");
   var i;
   var len = file.length
   for(i=0;i<len;i++){
+    curline = i;
     whitespaceparse(file.shift(),file.push.bind(file));
   }
   var name;
+  while(subreq.length > 0){
+    name = subreq.shift()
+    file.unshift(name[0]+" = require \""+name[1]+"\" "+"."+name[0]);
+  }
   while(req.length > 0){
     name = req.shift()
-    file.unshift("var "+name+" = require(\""+name+"\");");
-  }
-  console.log(curender.length);
-  while(curender.length > 0){
-    lastws = lastws.substring(0,lastws.length-2);
-    file.push(lastws+curender.pop());
+    file.unshift(name+" = require \""+name+"\"");
   }
   while(exp.length > 0){
     name = exp.shift();
@@ -102,18 +121,31 @@ function transform(infile,outfile){
       file.splice(i,1);
       i--;
     }
+    m = /^(.*)\s+$/.exec(file[i]);
+    if(m){
+      file[i] = m[0];
+    }
   }
   if(hasusrbin){
     file.unshift("//!/usr/bin/env node");
   }
   file = file.join("\n");
+  curfile = outfile;
+  var comperrs = [];
+  try{
+    comperrs = lint.lint(file);
+  }catch(e){
+    throw_or_log(e);
+  }
+  for(i in comperrs){
+    curline = comperrs[i].lineNumber
+    throw_or_log(comperrs[i].message);
+  }
   fs.writeFileSync(outfile,file);
   curclass = [];
-  curender = [];
   lastws = "";
   curws = "";
   multi = false;
-  lastline = "";
   hasusrbin = false;
   file = null;
 }
@@ -125,21 +157,17 @@ function whitespaceparse(line,push){
   if(commentpatt.usrbin.pattern.test(temp)){
     return;
   }
-  m = commentpatt.comment.pattern.exec(temp);
-  if(m){
-    m.shift();
-    temp = commentpatt.comment.transform(m);
-  }
   m = commentpatt.multioneline.pattern.exec(temp);
   if(m){
     m.shift();
     temp = commentpatt.multioneline.transform(m);
-  }
-  m = commentpatt.multi.pattern.exec(temp);
-  if(m){
-    m.shift();
-    temp = commentpatt.multi.transform(m);
-    if(multi) return push(temp);
+  }else{
+    m = commentpatt.multi.pattern.exec(temp);
+    if(m){
+      m.shift();
+      temp = commentpatt.multi.transform(m);
+      if(multi) return push(temp);
+    }
   }
   if(multi){
     return;
@@ -155,19 +183,13 @@ function whitespaceparse(line,push){
       lastlineisextension = false;
     }
   }else{
-    console.log(tempws.length);
     while(curws.length < tempws.length){
       if(curclass.length > 0){
         if(curws == curclass.ws){
           curclass.shift();
         }
       }
-      if(curender.length > 1){
-        tempws = tempws.substring(0,tempws.length-2);
-      }else{
-        tempws = curws;
-      }
-      push(tempws+curender.pop());
+      tempws = tempws.substring(0,tempws.length-2);
     }
   }
   for(i in patterns){
@@ -180,30 +202,12 @@ function whitespaceparse(line,push){
       return;
     }
   }
-  var fe = false;
-  for(i in endpatt){
-    if(endpatt[i].pattern.test(temp)){
-      curender.push(endpatt[i].ender);
-      fe = true;
-      break
-    }
-  }
   lastws = curws;
-  if(/(.*)\\(\s*\/\/.*)?$/.test(temp)){
-    temp = temp.substring(0,temp.length-1);
-  }
-  if(/^\s*(\+|\,)/.test(temp)){
-    lastlineisextension = true;
-  }
-  if(/(\+|\,)\s*$/.test(temp)){
-    lastlineisextension = true;
-  }
   /*
   if(!fe && !lastlineisextension){
     temp += ";"
   }
   */
-  lastline = "";
   return push(temp);
 }
 var commentpatt = {
@@ -212,12 +216,6 @@ var commentpatt = {
     transform:function(groups){
       hasusrbin = true;
       return "";
-    }
-  },
-  comment:{
-    pattern:/^(.*)\#(.*)$/,
-    transform:function(groups){
-      return groups[0];
     }
   },
   multioneline: {
@@ -240,9 +238,9 @@ var commentpatt = {
 }
 var patterns = {
   main:{
-    pattern:/^\s*if\s+__name__\s+==\s+"__main__"\s*\:$/,
+    pattern:/^\s*if\s+__name__\s+==\s+("|')__main__("|')\s*\:$/,
     transform:function(groups){
-      return "if(!module.parent) {";
+      return "if not module.parent";
     }
   },
   std:{
@@ -252,98 +250,102 @@ var patterns = {
     }
   },
   platform:{
-    pattern:/^(.*)(\s+)(sys.platfrom)(.*)$/,
+    pattern:/^(.*)(\W+)(sys.platfrom)(.*)$/,
     transform:function(groups){
       addreq("os");
-      return groups[0]+groups[1]+"os.platform()"+groups[3];
+      return groups[0]+groups[1]+"os.platform()"+(groups[3]||"");
     }
   },
   chdir:{
-    pattern:/^(.*)(\s+)(os.chdir)(.*)$/,
+    pattern:/^(.*)(\W+)(os.chdir)(.*)$/,
     transform:function(groups){
-      return groups[0]+groups[1]+"process.chdir"+groups[3];
+      return groups[0]+groups[1]+"process.chdir "+(groups[3]||"");
     }
   },
   isdir:{
     pattern:/^(.*)(\s+)(os.path.isdir)(\s*)\((.*)\)(.*)$/,
     transform:function(groups){
-      return groups[0]+groups[1]+"fs.statSync("+groups[4]+").isDirectory() "+groups[5];
+      addreq("fs");
+      var ret = groups[0]+groups[1]+"fs\n";
+      ret += groups[0]+"  "+".statSync("+groups[4]+")\n"
+      ret += groups[0]+"  "+".isDirectory()"+(groups[5]||"");
+      return ret;
     }
   },
   concat:{
-    pattern:/^(\s*)(\w+)(\.extend)(\s*)\((.*)\)(.*)$/,
+    pattern:/^(\s*)(\w+)\.extend\s*\((.*)\)(.*)$/,
     transform:function(groups){
-      return groups[0]+groups[1]+" = "+groups[1]+".concat("+groups[4]+");"+groups[5];
+      return groups[0]+groups[1]+" = "+groups[1]+".concat "+groups[2]+" "+(groups[3]||"");
+    }
+  },
+  concatalt:{
+    pattern:/^(\s*)(\w+)\.extend\s*\((.*)$/,
+    transform:function(groups){
+      return groups[0]+groups[1]+" = "+groups[1]+".concat "+(groups[3]||"");
     }
   },
   push:{
-    pattern:/^(\s*)(\w+)(\.append)(\s*)\((.*)\)(.*)$/,
+    pattern:/^(\s*)(\w+)\s*\.\s*append\s*\((.*)\)(.*)$/,
     transform:function(groups){
-      return groups[0]+groups[1]+" = "+groups[1]+".push("+groups[4]+");"+groups[5];
+      return groups[0]+groups[1]+".push "+groups[2]+(groups[3]||"");
     }
   },
   ifstate:{
-    pattern:/^(\s*)if\s+(.*)\:$/,
+    pattern:/^(\s*)if\s+(.*)$/,
     transform: function(groups){
-      return groups[0]+"if ("+groups[1]+" ){ ";
+      currentblocktype = "if"
+      return groups[0]+"if "+groups[1];
     }
   },
   elifstate:{
-    pattern:/^(\s*)elif\s+(.*)\:$/,
+    pattern:/^(\s*)elif\s+(.*)$/,
     transform: function(groups){
-      return groups[0]+"else if ("+groups[1]+" ){ ";
+      currentblocktype = "if"
+      return groups[0]+"else if "+groups[1];
     }
   },
   elsestate:{
     pattern:/^(\s*)else\s*\:$/,
     transform: function(groups){
-      return groups[0]+"else { ";
+      return groups[0]+"else";
     }
   },
   forloops:{
-    pattern:/^(\s*)(for)(.*)(\:)$/,
+    pattern:/^(\s*)(for)\s+(.*)$/,
     transform: function(groups){
-      return groups[0]+"for ( "+groups[2]+" ){ ";
+      currentblocktype = "for";
+      return groups[0]+"for "+groups[2];
     }
   },
   whileloops:{
-    pattern:/^(\s*)(while)(.*)(\:)$/,
+    pattern:/^(\s*)(while)\s+(.*)$/,
     transform: function(groups){
-      return groups[0]+"for ( "+groups[2]+" ){ ";
+      currentblocktype = "while";
+      return groups[0]+"while "+groups[2];
     }
   },
   classstate:{
-    pattern:/^(\s*)(class)\s+(\w+)\s*(\(\w+\))?\s*\:$/,
+    pattern:/^(\s*)class\s+(\w+)\s*(\([A-Za-z0-9_\. ]+\))?\s*\:$/,
     transform:function(groups){
-      addclass(groups[2],groups[3]);
-      if(curclass[0].inherits){
-        return "util.inherits("+curclass[0].name+", "+curclass[0].inherits+");";
-      }
+      addclass(groups[1],groups[3]);
+      return groups[0]+"class "+groups[1]+" extends "+groups[2]
     }
   },
   functionstate:{
-    pattern:/^(\s*)(def)\s+(.*)\s*\((.*)\)?(.*)$/,
+    pattern:/^(\s*)def\s+(.*)\s*\((.*)$/,
     transform: function(groups){
+      currentblocktype = "args";
       var ret;
-      if(curclass.length > 0){
-        if(/^__init__/.test(groups[2])){
-          addexport(curclass[0].name);
-          ret = groups[0]+"function "+curclass[0].name;
-        }else{
-          ret = groups[0]+curclass[0].name+".prototype."+groups[2]+" = function ";
+      if(/^__init__/.test(groups[1])){
+        if(curclass.length === 0){
+          throw_or_log("constructor with no class reference");
         }
-      }else{
-        addexport(groups[2]);
-        ret = groups[0]+"function "+groups[2];
+        return groups[0]+"constructor: ("+groups[2];
       }
-      ret += "("+groups[3];
-      return ret;
-    }
-  },
-  not:{
-    pattern:/(.*)(\W+)not(\s+)(.*)/,
-    transform:function(groups){
-      return groups[0]+" ! "+groups[3];
+      if(curclass.length === 0){
+        addexport(groups[1]);
+      }
+      return groups[0]+groups[1]+": ("+groups[2];
     }
   },
   req:{
@@ -353,34 +355,70 @@ var patterns = {
       return "";
     }
   },
+  subreq:{
+    pattern:/^(\s*)from\s+(.*)\s+import\s+(.*)$/,
+    transform: function(groups){
+      addsubreq(groups[2],groups[1]);
+      return "";
+    }
+  },
   trys:{
     pattern:/^(\s*)try\s*\:$/,
     transform: function(groups){
-      return groups[0]+"try{";
+      return groups[0]+"try";
     }
   },
   catches:{
-    pattern:/^(\s*)except\s+(.*)\:$/,
+    pattern:/^(\s*)except(.*)\:$/,
     transform: function(groups){
-      return groups[0]+"catch("+groups[1]+"){";
+      return groups[0]+"catch "+groups[1]+(groups[2]||"");
     }
   },
   finallys:{
     pattern:/^(\s*)finally\s*\:$/,
     transform: function(groups){
-      return groups[0]+"finally{";
+      return groups[0]+"finally";
     }
   },
   selfs:{
     pattern:/^(.*)(\W)self(\W)(.*)$/,
     transform: function(groups){
-      return groups[0]+groups[1]+"this"+groups[3]+groups[4];
+      if(currentblocktype == "args"){
+        return groups[0]+groups[1]+groups[3];
+      }
+      return groups[0]+groups[1]+"@"+groups[2]+groups[3];
+    }
+  },
+  with:{
+    pattern:/^(\s*)with\s+(.*)$/,
+    transform: function(groups){
+      warn_or_throw("With statements are not currently supported")
+      return groups[0]+groups[1]+"@"+groups[3]+groups[4];
     }
   },
   colonend:{
     pattern: /(.*)\:$/ ,
     transform: function(groups){
-      return groups[0]+" {";
+      if(currentblocktype){
+        if(currentblocktype == "args"){
+          groups[0] += " ->";
+        }
+        currentblocktype = false;
+        return groups[0];
+      }
+      if(groups[0].charAt(groups[0].length-1) == ")"){
+        return groups[0]+" ->"
+      }
+      if(groups[0].indexOf("#") !== -1){
+        return groups[0];
+      }
+      if(/\s*".*"\s*$/.test(groups[0])){
+        return groups[0]+":";
+      }
+      if(/\s*'.*'\s*$/.test(groups[0])){
+        return groups[0]+":";
+      }
+      throw_or_log("\""+groups[0]+"\" isn't being processed");
     }
   },
 }
@@ -437,7 +475,48 @@ var consolidatepatt = {
 }
 
 
+function throw_or_log(message){
+  var boldcyan = "\033[1;36m";
+  var boldred = "\033[1;31m";
+  var formatend = "\033[0m";
+  message = boldcyan+message+boldred+"\n In File["+curfile+"] Line: "+(curline+1)+formatend;
+  if(!process.env.force){
+    throw new Error(message);
+  }else{
+    console.error(message);
+  }
+}
+
+function warn_or_throw(message){
+  var boldcyan = "\033[1;36m";
+  var boldorange = "\033[1;93m";
+  var formatend = "\033[0m";
+  message = boldcyan+message+boldorange+"\n In File["+curfile+"] Line: "+(curline+1)+formatend;
+  if(process.env.sensitive){
+    throw new Error(message);
+  }else{
+    console.warn(message);
+  }
+}
+
+
 if(!module.parent) {
+  console.log(
+    "\033[47;30m"+
+    "==================================="+
+    "\033[0m"
+  );
+  console.log(
+    "\033[1;93m"+
+    "Starting Python to CoffeeScript"+
+    "\033[0m"
+  )
+  console.log(
+    "\033[47;30m"+
+    "==================================="+
+    "\033[0m"
+  );
+
   var indir = process.env.in_dir || process.cwd();
   var outdir = process.env.out_dir || path.resolve(process.cwd(), "compjs");
   var boo = false;
